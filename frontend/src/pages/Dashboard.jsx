@@ -9,7 +9,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     apiGetMe()
-      .then(data => setUser(data.user))
+      .then(data => {
+        if (!data.user.is_onboarded) {
+          navigate('/onboarding', { replace: true });
+        } else {
+          setUser(data.user);
+        }
+      })
       .catch(() => {
         navigate('/', { replace: true });
       })

@@ -16,6 +16,8 @@ def init_db():
             full_name TEXT NOT NULL,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
+            is_onboarded BOOLEAN DEFAULT 0,
+            onboarding_data TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)

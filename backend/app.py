@@ -1,4 +1,5 @@
 import re
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
@@ -69,7 +70,7 @@ def create_session(user_id: int) -> str:
 def get_session_user(session_id: str):
     conn = get_db()
     row = conn.execute("""
-        SELECT u.id, u.full_name, u.email, u.created_at, s.expires_at
+        SELECT u.id, u.full_name, u.email, u.created_at, u.is_onboarded, s.expires_at
         FROM sessions s
         JOIN users u ON s.user_id = u.id
         WHERE s.session_id = ?
@@ -99,7 +100,8 @@ def get_session_user(session_id: str):
         "full_name": row["full_name"],
         "email": row["email"],
         "member_since": row["created_at"][:10] if row["created_at"] else "—",
-        "active_sessions": active_sessions
+        "active_sessions": active_sessions,
+        "is_onboarded": bool(row["is_onboarded"])
     }
 
 
@@ -196,6 +198,29 @@ def logout():
         conn.commit()
         conn.close()
     return jsonify({"message": "Logged out successfully."})
+
+
+@app.route("/api/auth/onboarding", methods=["POST"])
+def complete_onboarding():
+    session_id = request.headers.get("X-Session-Id")
+    if not session_id:
+        return jsonify({"error": "No session provided."}), 401
+    
+    user = get_session_user(session_id)
+    if not user:
+        return jsonify({"error": "Session expired or invalid."}), 401
+        
+    data = request.json or {}
+    
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET is_onboarded = 1, onboarding_data = ? WHERE id = ?",
+        (json.dumps(data), user["id"])
+    )
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"message": "Onboarding completed successfully.", "user": {**user, "is_onboarded": True}})
 
 
 # Return 429 JSON instead of HTML when rate limit is hit

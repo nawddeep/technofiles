@@ -68,16 +68,22 @@ export default function Auth() {
 
     setLoading(true);
     try {
+      let res;
       if (isLogin) {
-        await apiLogin({ email: formData.email, password: formData.password });
+        res = await apiLogin({ email: formData.email, password: formData.password });
       } else {
-        await apiSignup({
+        res = await apiSignup({
           fullName: formData.fullName,
           email: formData.email,
           password: formData.password
         });
       }
-      navigate('/dashboard');
+      
+      if (res.user && res.user.is_onboarded) {
+        navigate('/dashboard');
+      } else {
+        navigate('/onboarding');
+      }
     } catch (err) {
       setServerError(err.message);
     } finally {

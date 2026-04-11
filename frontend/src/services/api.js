@@ -76,3 +76,14 @@ export async function apiGetMe() {
     headers: authHeaders(),
   });
 }
+
+export async function apiOnboarding(data) {
+  const res = await safeFetch(`${BASE_URL}/api/auth/onboarding`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  });
+  localStorage.setItem("user", JSON.stringify(res.user));
+  return res;
+}
+
