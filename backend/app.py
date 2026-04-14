@@ -794,10 +794,24 @@ def get_gemini_model(user_profile=""):
         return None
 
 
-def explain_image_with_gemini(image_bytes, mime_type="image/jpeg"):
+def explain_image_with_gemini(image_bytes, mime_type="image/jpeg", chat_session=None):
+    """
+    FIX 2.31: Reuse existing chat session for image processing to avoid creating new model instances
+    If chat_session is provided, use it. Otherwise fall back to creating a new model (legacy behavior).
+    """
     try:
         import warnings
         warnings.filterwarnings("ignore")
+        
+        # If we have an existing chat session, use it directly with the image
+        if chat_session:
+            response = chat_session.send_message([
+                "Describe this image in detail so another language model can understand its contents.",
+                {"mime_type": mime_type, "data": image_bytes}
+            ])
+            return response.text
+        
+        # Fallback: create new model instance (only if no chat session available)
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-2.0-flash")
@@ -811,7 +825,10 @@ def explain_image_with_gemini(image_bytes, mime_type="image/jpeg"):
 
 
 def get_or_create_ai_session(session_id, user_id, onboarding_data=""):
-    """FIX 2.28: AI session management with Redis TTL (24 hours)"""
+    """
+    FIX 2.28: AI session management with Redis TTL (24 hours)
+    FIX 2.31: Optimized to NOT reload 50 messages every time - Gemini chat maintains context
+    """
     # Try to get from in-memory first (Gemini chat object can't be serialized)
     if session_id in ai_sessions:
         return ai_sessions[session_id]
@@ -824,30 +841,43 @@ def get_or_create_ai_session(session_id, user_id, onboarding_data=""):
                 session_data = json.loads(cached)
                 # Session exists in Redis, recreate chat from history
                 logger.info(f"[AI SESSION] Restored session {session_id} from Redis")
-                return {"chat": None, "chat_group_id": session_data["chat_group_id"], "user_id": user_id}
+                
+                # FIX 2.31: Only load history when recreating a session (not on every message)
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT sender, text FROM chat_messages WHERE user_id = %s AND chat_group_id = %s ORDER BY created_at ASC LIMIT 50",
+                    (user_id, session_data["chat_group_id"])
+                )
+                rows = cursor.fetchall()
+                conn.close()
+                
+                formatted_history = []
+                for row in rows:
+                    role = "user" if row["sender"] == "user" else "model"
+                    formatted_history.append({"role": role, "parts": [row["text"]]})
+                
+                model = get_gemini_model(onboarding_data or "")
+                if model is None:
+                    return None
+                
+                chat = model.start_chat(history=formatted_history)
+                
+                ai_sessions[session_id] = {
+                    "chat": chat,
+                    "chat_group_id": session_data["chat_group_id"],
+                    "user_id": user_id
+                }
+                return ai_sessions[session_id]
         except Exception as e:
             logger.warning(f"[AI SESSION] Redis lookup failed: {e}")
     
-    # Create new session
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT sender, text FROM chat_messages WHERE user_id = %s ORDER BY created_at DESC LIMIT 50",
-        (user_id,)
-    )
-    rows = cursor.fetchall()
-    conn.close()
-    
-    formatted_history = []
-    for row in rows:
-        role = "user" if row["sender"] == "user" else "model"
-        formatted_history.append({"role": role, "parts": [row["text"]]})
-    
+    # Create new session - FIX 2.31: Start with EMPTY history, let Gemini maintain context
     model = get_gemini_model(onboarding_data or "")
     if model is None:
         return None
     
-    chat = model.start_chat(history=formatted_history)
+    chat = model.start_chat(history=[])  # Empty history - Gemini maintains context internally
     new_group_id = str(uuid.uuid4())
     
     session_data = {
@@ -1253,6 +1283,8 @@ def chat_message(user):
     ai_sess = get_or_create_ai_session(session_id, user["id"], user.get("onboarding_data", ""))
     if ai_sess is None:
         return jsonify({"error": "Failed to initialize AI."}), 503
+    
+    # FIX 2.31: Process images using the SAME chat session to avoid creating new model instances
     image_context = ""
     db_prompt = prompt
     if images:
@@ -1267,12 +1299,14 @@ def chat_message(user):
                 if not ok:
                     descriptions.append(f"Image {idx+1}: (rejected - {msg})")
                     continue
-                desc = explain_image_with_gemini(img_bytes, img.get("mime_type", "image/jpeg"))
+                # FIX 2.31: Pass chat session to reuse existing model instead of creating new one
+                desc = explain_image_with_gemini(img_bytes, img.get("mime_type", "image/jpeg"), chat_session=ai_sess["chat"])
                 descriptions.append(f"Image {idx+1}: {desc}")
             except Exception:
                 descriptions.append(f"Image {idx+1}: (failed to process)")
         image_context = "\n\n[System: User attached images.]\n" + "\n".join(descriptions)
         db_prompt += f" [{len(images)} image(s)]"
+    
     final_prompt = prompt + image_context
     conn = get_db()
     try:
@@ -1285,6 +1319,7 @@ def chat_message(user):
     finally:
         conn.close()
     try:
+        # FIX 2.31: Single API call for the actual chat message (images already processed above)
         response = ai_sess["chat"].send_message(final_prompt)
         ai_text = response.text
         conn = get_db()
