@@ -3,7 +3,7 @@ FIX 2.19: Chat service unit tests
 Tests for chat history, message storage, and pagination
 """
 import pytest
-import sqlite3
+import psycopg2
 from services.chat_service import (
     save_message, get_chat_history, clear_chat, get_message_count
 )
@@ -17,7 +17,7 @@ class TestChatService:
         try:
             msg_id = save_message(1, "user", "Hello AI!", chat_group_id="group1")
             assert isinstance(msg_id, int)
-        except (sqlite3.OperationalError, Exception):
+        except (psycopg2.OperationalError, Exception):
             pytest.skip("Database not ready")
     
     def test_get_chat_history(self):
@@ -31,7 +31,7 @@ class TestChatService:
             history = get_chat_history(1, chat_group_id="test_group", limit=10)
             assert isinstance(history, list)
             assert len(history) >= 2
-        except (sqlite3.OperationalError, Exception):
+        except (psycopg2.OperationalError, Exception):
             pytest.skip("Database not ready")
     
     def test_message_count(self):
@@ -41,7 +41,7 @@ class TestChatService:
             count = get_message_count(user_id, chat_group_id="test")
             assert isinstance(count, int)
             assert count >= 0
-        except (sqlite3.OperationalError, Exception):
+        except (psycopg2.OperationalError, Exception):
             pytest.skip("Database not ready")
     
     def test_clear_chat(self):
@@ -53,5 +53,5 @@ class TestChatService:
             # Verify cleared
             count = get_message_count(user_id, chat_group_id="clear_test")
             assert count == 0
-        except (sqlite3.OperationalError, Exception):
+        except (psycopg2.OperationalError, Exception):
             pytest.skip("Database not ready")

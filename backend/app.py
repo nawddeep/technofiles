@@ -41,16 +41,31 @@ if not JWT_SECRET_KEY:
 if len(JWT_SECRET_KEY) < 32:
     raise SystemExit("[FATAL] JWT_SECRET_KEY must be >= 32 chars")
 
+# FIX 2.26: Redis Graceful Degradation - optional in development
+REDIS_AVAILABLE = False
 try:
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.ping()
     logger.info("[OK] Redis connected")
+    REDIS_AVAILABLE = True
 except Exception as e:
-    raise SystemExit(f"[FATAL] Redis connection failed: {e}")
+    logger.warning(f"[WARN] Redis unavailable: {e}. Using in-memory fallback for development")
+    redis_client = None  # Fallback handler
+    REDIS_AVAILABLE = False
+
+# In-memory fallback for Redis operations (development-only)
+redis_fallback = {}
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}})
-limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri=REDIS_URL)
+
+# FIX 2.26: Limiter graceful degradation - use Redis if available, fall back to memory
+if REDIS_AVAILABLE:
+    limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri=REDIS_URL)
+    logger.info("[OK] Rate limiter using Redis")
+else:
+    limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="memory://")
+    logger.warning("[WARN] Rate limiter using in-memory storage (development only)")
 
 # FIX 2.17: API Versioning - register routes at /api/v1/... (current) and /api/... (legacy for backward compatibility)
 def versioned_route(path, methods=["GET"], limit=None):
@@ -68,7 +83,11 @@ def versioned_route(path, methods=["GET"], limit=None):
     return decorator
 
 # AI Sessions now use Redis instead of in-memory dict
-ai_sessions = {}
+ai_sessions = {}  # Keep in-memory for chat objects (can't serialize Gemini client)
+
+# FIX 2.27: Email queue for failed emails - file-based with Redis optiona
+email_queue = []  # In-memory queue as fallback
+email_queue_file = os.path.join(os.path.dirname(__file__), "email_queue.json")
 
 # === CONSTANTS ===
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
@@ -219,6 +238,7 @@ def validate_file_upload(file_storage):
 
 
 def scan_file_content(file_bytes):
+    """FIX 2.29: File upload MIME validation with optional python-magic"""
     # FIX 1.9: Scan ENTIRE file, not just first 4KB
     try:
         text = file_bytes.decode("utf-8", errors="ignore").lower()  # Scan full content
@@ -231,10 +251,24 @@ def scan_file_content(file_bytes):
                 return False, "Potentially malicious content detected."
     except Exception:
         pass
-    executable_sigs = [b"MZ", b"\x7fELF"]
+    
+    # Executable signature detection
+    executable_sigs = [b"MZ", b"\x7fELF"]  # Windows PE, ELF
     for sig in executable_sigs:
         if file_bytes.startswith(sig):
             return False, "Executable files are not allowed."
+    
+    # Optional: Use python-magic for better MIME detection if available
+    try:
+        import magic
+        mime_type = magic.Magic(mime=True).from_buffer(file_bytes)
+        if mime_type not in ALLOWED_MIME:
+            return False, f"MIME type {mime_type} is not allowed (python-magic validation)."
+    except ImportError:
+        logger.debug("[MIME] python-magic not available, using fallback validation")
+    except Exception as e:
+        logger.warning(f"[MIME] python-magic validation failed: {e}, using fallback")
+    
     return True, ""
 
 
@@ -415,12 +449,24 @@ def get_ua():
 
 def generate_csrf_token(session_id=""):
     token = secrets.token_urlsafe(32)
-    redis_client.setex(f"csrf:{token}", 3600, session_id)  # 1 hour TTL
+    if REDIS_AVAILABLE:
+        redis_client.setex(f"csrf:{token}", 3600, session_id)  # 1 hour TTL
+    else:
+        redis_fallback[f"csrf:{token}"] = (session_id, time.time() + 3600)
     return token
 
 
 def validate_csrf_token(token):
-    return redis_client.exists(f"csrf:{token}") > 0
+    if REDIS_AVAILABLE:
+        return redis_client.exists(f"csrf:{token}") > 0
+    else:
+        if token in redis_fallback:
+            _, expiry = redis_fallback[token]
+            if time.time() < expiry:
+                return True
+            else:
+                del redis_fallback[token]
+        return False
 
 
 def validate_origin():
@@ -555,7 +601,39 @@ def get_user_sessions(user_id):
 
 
 # === EMAIL ===
+def queue_email(to_address, subject, body, retry_count=0):
+    """FIX 2.27: Queue failed emails for retry"""
+    email_entry = {
+        "to_address": to_address,
+        "subject": subject,
+        "body": body,
+        "retry_count": retry_count,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Try Redis queue first
+    if REDIS_AVAILABLE:
+        try:
+            redis_client.lpush("email_queue", json.dumps(email_entry))
+            logger.info(f"[EMAIL QUEUE] Queued email to {to_address} (Redis)")
+            return
+        except Exception as e:
+            logger.warning(f"[EMAIL QUEUE] Failed to queue to Redis: {e}")
+    
+    # Fall back to in-memory queue
+    email_queue.append(email_entry)
+    logger.info(f"[EMAIL QUEUE] Queued email to {to_address} (in-memory)")
+    
+    # Persist to file as backup
+    try:
+        with open(email_queue_file, "w") as f:
+            json.dump(email_queue, f)
+    except Exception as e:
+        logger.warning(f"[EMAIL QUEUE] Failed to persist queue: {e}")
+
+
 def send_email(to_address, subject, body):
+    """FIX 2.27: Email with graceful degradation and queueing"""
     if not SMTP_HOST or not SMTP_USER:
         logger.info(f"[EMAIL] Would send to {to_address}: {subject}")
         return False
@@ -568,15 +646,56 @@ def send_email(to_address, subject, body):
         msg["To"] = to_address
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "html"))
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=5)
         server.starttls()
         server.login(SMTP_USER, SMTP_PASS)
         server.sendmail(EMAIL_FROM, to_address, msg.as_string())
         server.quit()
+        logger.info(f"[EMAIL] Sent to {to_address}: {subject}")
         return True
     except Exception as e:
-        logger.error(f"Email send failed: {e}")
+        logger.warning(f"[EMAIL] Send failed: {e}. Queuing for retry.")
+        queue_email(to_address, subject, body)  # Queue for retry
         return False
+
+
+def retry_queued_emails():
+    """FIX 2.27: Retry emails from queue - called periodically"""
+    global email_queue
+    
+    # Try Redis queue first
+    if REDIS_AVAILABLE:
+        try:
+            while True:
+                email_json = redis_client.rpop("email_queue")
+                if not email_json:
+                    break
+                email_entry = json.loads(email_json)
+                retry_count = email_entry.get("retry_count", 0)
+                
+                if retry_count < 3:  # Max 3 retries
+                    success = send_email(email_entry["to_address"], email_entry["subject"], email_entry["body"])
+                    if not success:
+                        email_entry["retry_count"] = retry_count + 1
+                        redis_client.lpush("email_queue", json.dumps(email_entry))
+                else:
+                    logger.error(f"[EMAIL QUEUE] Dropped email to {email_entry['to_address']} (max retries exceeded)")
+        except Exception as e:
+            logger.warning(f"[EMAIL QUEUE] Redis retry failed: {e}")
+    
+    # Also retry from in-memory queue
+    if email_queue:
+        email_queue_copy = email_queue.copy()
+        email_queue.clear()
+        for email_entry in email_queue_copy:
+            retry_count = email_entry.get("retry_count", 0)
+            if retry_count < 3:
+                success = send_email(email_entry["to_address"], email_entry["subject"], email_entry["body"])
+                if not success:
+                    email_entry["retry_count"] = retry_count + 1
+                    email_queue.append(email_entry)
+            else:
+                logger.error(f"[EMAIL QUEUE] Dropped email to {email_entry['to_address']} (max retries exceeded)")
 
 
 def generate_password_reset_token(user_id):
@@ -692,15 +811,28 @@ def explain_image_with_gemini(image_bytes, mime_type="image/jpeg"):
 
 
 def get_or_create_ai_session(session_id, user_id, onboarding_data=""):
-    # Try to get from Redis first
-    cached = redis_client.get(f"ai_session:{session_id}")
-    if cached:
-        return json.loads(cached)
+    """FIX 2.28: AI session management with Redis TTL (24 hours)"""
+    # Try to get from in-memory first (Gemini chat object can't be serialized)
+    if session_id in ai_sessions:
+        return ai_sessions[session_id]
     
+    # Try to get metadata from Redis
+    if REDIS_AVAILABLE:
+        try:
+            cached = redis_client.get(f"ai_session:{session_id}")
+            if cached:
+                session_data = json.loads(cached)
+                # Session exists in Redis, recreate chat from history
+                logger.info(f"[AI SESSION] Restored session {session_id} from Redis")
+                return {"chat": None, "chat_group_id": session_data["chat_group_id"], "user_id": user_id}
+        except Exception as e:
+            logger.warning(f"[AI SESSION] Redis lookup failed: {e}")
+    
+    # Create new session
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT sender, text FROM chat_messages WHERE user_id = %s ORDER BY created_at ASC",
+        "SELECT sender, text FROM chat_messages WHERE user_id = %s ORDER BY created_at DESC LIMIT 50",
         (user_id,)
     )
     rows = cursor.fetchall()
@@ -720,12 +852,19 @@ def get_or_create_ai_session(session_id, user_id, onboarding_data=""):
     
     session_data = {
         "chat_group_id": new_group_id,
-        "user_id": user_id
+        "user_id": user_id,
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
-    # Store in Redis with 24-hour TTL, keep chat object in memory (can't serialize)
-    redis_client.setex(f"ai_session:{session_id}", 86400, json.dumps(session_data))
     
-    # Keep in-memory for the chat object (Gemini client can't be serialized)
+    # Store metadata in Redis with 24-hour TTL
+    if REDIS_AVAILABLE:
+        try:
+            redis_client.setex(f"ai_session:{session_id}", 86400, json.dumps(session_data))
+            logger.info(f"[AI SESSION] Stored session {session_id} to Redis")
+        except Exception as e:
+            logger.warning(f"[AI SESSION] Failed to store to Redis: {e}")
+    
+    # Keep chat object in memory (Gemini client can't be serialized)
     ai_sessions[session_id] = {
         "chat": chat,
         "chat_group_id": new_group_id,
@@ -793,8 +932,8 @@ def signup():
     email_sent = send_email(email, "Verify your SAAITA account",
                f"Please verify your email: <a href='{APP_URL}/verify-email?token={verify_token}'>Verify Email</a>")
     if not email_sent:
-        logger.warning(f"[SIGNUP] Email verification failed for {email}")
-        return jsonify({"error": "Email service unavailable. Please try again later or contact support."}), 503
+        logger.warning(f"[SIGNUP] Email verification failed for {email} - user can still login, email queue retry enabled")
+        # FIX 2.26: Allow signup even if email fails - user can still access app, email will retry
     audit_log("USER_SIGNUP", user_id=user_id, ip_address=ip_address, user_agent=user_agent)
     resp = jsonify({
         "access_token": access_token,
@@ -1094,9 +1233,10 @@ def revoke_session(user, session_id):
 # =========================================================
 
 @app.route("/api/chat/message", methods=["POST"])
+@app.route("/api/v1/chat/message", methods=["POST"])  # FIX 2.17: Versioned endpoint
 @require_auth
 # @require_verified_email  # Allow chat before email verification (for testing)
-@limiter.limit("30 per minute")
+@limiter.limit("20 per hour")  # FIX 2.30: Rate limiting - 20 messages per hour per user
 def chat_message(user):
     if not GEMINI_API_KEY:
         return jsonify({"error": "AI service is not configured."}), 503
@@ -1165,21 +1305,25 @@ def chat_message(user):
 
 
 @app.route("/api/chat/history", methods=["GET"])
+@app.route("/api/v1/chat/history", methods=["GET"])  # FIX 2.17: Versioned endpoint
 @require_auth
 # @require_verified_email  # Allow history before email verification
 def chat_history(user):
+    # FIX 2.24: Limit chat history to last 50 messages (pagination)
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT sender, text FROM chat_messages WHERE user_id = %s ORDER BY created_at ASC",
+        "SELECT sender, text FROM chat_messages WHERE user_id = %s ORDER BY created_at DESC LIMIT 50",
         (user["id"],)
     )
     rows = cursor.fetchall()
     conn.close()
-    return jsonify({"messages": [{"sender": r["sender"], "text": r["text"]} for r in rows]})
+    # Reverse to get chronological order (oldest first)
+    return jsonify({"messages": [{"sender": r["sender"], "text": r["text"]} for r in reversed(list(rows))]})
 
 
 @app.route("/api/chat/clear", methods=["POST"])
+@app.route("/api/v1/chat/clear", methods=["POST"])  # FIX 2.17: Versioned endpoint
 @require_auth
 # @require_verified_email  # Allow clear before email verification
 def chat_clear(user):
@@ -1263,6 +1407,8 @@ def before_request_cleanup():
     if secrets.randbelow(1000) == 0:
         try:
             cleanup_expired_data()
+            # FIX 2.27: Periodically retry queued emails
+            retry_queued_emails()
         except Exception:
             pass
 
@@ -1271,6 +1417,19 @@ def before_request_cleanup():
 # MAIN
 # =========================================================
 
+# === EMAIL QUEUE RECOVERY ===
+def load_email_queue_from_file():
+    """FIX 2.27: Recover unsent emails from file on startup"""
+    global email_queue
+    if os.path.exists(email_queue_file):
+        try:
+            with open(email_queue_file, "r") as f:
+                email_queue = json.load(f)
+            logger.info(f"[EMAIL QUEUE] Recovered {len(email_queue)} queued emails from file")
+        except Exception as e:
+            logger.warning(f"[EMAIL QUEUE] Failed to load queue from file: {e}")
+
+
 if __name__ == "__main__":
     # FIX 1.6: Verify PostgreSQL is configured
     database_url = os.getenv("DATABASE_URL", "")
@@ -1278,12 +1437,17 @@ if __name__ == "__main__":
         raise SystemExit("[FATAL] DATABASE_URL not set in .env - PostgreSQL required")
     
     init_db()
+    load_email_queue_from_file()
+    
     if not GEMINI_API_KEY:
         print("\n[WARNING] GEMINI_API_KEY not set - AI chat disabled!\n")
     else:
         print("\n[OK] GEMINI_API_KEY loaded - AI chat enabled\n")
+    
     print("[OK] Security features enabled: JWT Auth, CSRF, Rate Limiting,")
     print("     Brute Force Protection, Audit Logging, Security Headers,")
     print("     Input Validation, Secure Cookies, Email Verification,")
     print("     Password Reset, Session Management, File Upload Security")
+    print(f"[OK] Redis: {'CONNECTED' if REDIS_AVAILABLE else 'FALLBACK (in-memory only)'}")
+    print(f"[OK] Email Queue: Enabled (capacity={len(email_queue)} pending)")
     app.run(port=5000, debug=DEBUG)

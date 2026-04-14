@@ -3,7 +3,7 @@ FIX 2.19: Auth service unit tests
 Tests for user management, session handling, and authentication logic
 """
 import pytest
-import sqlite3
+import psycopg2
 import os
 from datetime import datetime, timezone
 from services.auth_service import (
@@ -19,8 +19,8 @@ class TestAuthService:
     @pytest.fixture
     def clean_db(self):
         """Create a clean test database"""
-        # For testing, use an in-memory SQLite database
-        # In production, this would use a test PostgreSQL instance
+        # For testing, use a test PostgreSQL instance
+        # Connection details are configured in the database module
         yield
     
     def test_create_user(self, clean_db):
@@ -83,7 +83,7 @@ class TestSessions:
             sessions = get_active_sessions(user_id)
             assert isinstance(sessions, list)
             # Will be empty if no sessions created yet
-        except (ValueError, sqlite3.OperationalError):
+        except (ValueError, psycopg2.OperationalError):
             pytest.skip("Database not ready")
 
 
