@@ -2,7 +2,7 @@
 FIX 2.25: Soft delete service for audit compliance and data recovery
 Implements soft deletes with deletion audit trail
 """
-import sqlite3
+import psycopg2
 import json
 from datetime import datetime, timezone
 from database import get_db
@@ -21,43 +21,44 @@ def soft_delete_user(user_id, deleted_by_user_id=None, reason="User requested de
     """
     conn = get_db()
     try:
+        cursor = conn.cursor()
         now = datetime.now(timezone.utc).isoformat()
         
         # Get user data for backup before deletion
-        cursor = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
         user_row = cursor.fetchone()
         
         if not user_row:
             return False
         
-        # Convert row to dict
+        # Convert row to dict (RealDictCursor already returns dict-like objects)
         user_dict = dict(user_row)
         
         # Soft delete user
-        conn.execute(
-            "UPDATE users SET deleted_at = ? WHERE id = ?",
+        cursor.execute(
+            "UPDATE users SET deleted_at = %s WHERE id = %s",
             (now, user_id)
         )
         
         # Log deletion in audit table
-        conn.execute(
+        cursor.execute(
             """INSERT INTO deletion_audit 
                (table_name, record_id, user_id, deleted_by_user_id, reason, data_backup, recoverable)
-               VALUES (?, ?, ?, ?, ?, ?, 1)""",
+               VALUES (%s, %s, %s, %s, %s, %s, TRUE)""",
             ("users", user_id, user_id, deleted_by_user_id, reason, json.dumps(user_dict))
         )
         
         # Soft delete user's data
-        conn.execute(
-            "UPDATE chat_messages SET deleted_at = ? WHERE user_id = ?",
+        cursor.execute(
+            "UPDATE chat_messages SET deleted_at = %s WHERE user_id = %s",
             (now, user_id)
         )
-        conn.execute(
-            "UPDATE refresh_tokens SET deleted_at = ? WHERE user_id = ?",
+        cursor.execute(
+            "UPDATE refresh_tokens SET deleted_at = %s WHERE user_id = %s",
             (now, user_id)
         )
-        conn.execute(
-            "UPDATE sessions SET deleted_at = ? WHERE user_id = ?",
+        cursor.execute(
+            "UPDATE sessions SET deleted_at = %s WHERE user_id = %s",
             (now, user_id)
         )
         
@@ -82,9 +83,10 @@ def restore_user(user_id, restored_by_user_id=None):
     """
     conn = get_db()
     try:
+        cursor = conn.cursor()
         # Check if user is soft deleted
-        cursor = conn.execute(
-            "SELECT deleted_at FROM users WHERE id = ? AND deleted_at IS NOT NULL",
+        cursor.execute(
+            "SELECT deleted_at FROM users WHERE id = %s AND deleted_at IS NOT NULL",
             (user_id,)
         )
         
@@ -92,12 +94,12 @@ def restore_user(user_id, restored_by_user_id=None):
             return False
         
         # Restore user
-        conn.execute("UPDATE users SET deleted_at = NULL WHERE id = ?", (user_id,))
+        cursor.execute("UPDATE users SET deleted_at = NULL WHERE id = %s", (user_id,))
         
         # Log restoration
-        conn.execute(
-            "UPDATE deletion_audit SET recoverable = 0 WHERE table_name = 'users' AND record_id = ? AND recoverable = 1",
-            (user_id,)
+        cursor.execute(
+            "UPDATE deletion_audit SET recoverable = FALSE WHERE table_name = %s AND record_id = %s AND recoverable = TRUE",
+            ('users', user_id)
         )
         
         conn.commit()
@@ -118,28 +120,29 @@ def hard_delete_old_data(days_since_soft_delete=90):
     """
     conn = get_db()
     try:
+        cursor = conn.cursor()
         # Calculate cutoff date
         cutoff = datetime.now(timezone.utc)
         cutoff = cutoff.replace(day=cutoff.day - days_since_soft_delete)
         cutoff_str = cutoff.isoformat()
         
         # Delete old soft-deleted messages
-        cursor = conn.execute(
-            "DELETE FROM chat_messages WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+        cursor.execute(
+            "DELETE FROM chat_messages WHERE deleted_at IS NOT NULL AND deleted_at < %s",
             (cutoff_str,)
         )
         deleted_count = cursor.rowcount
         
         # Delete old soft-deleted tokens
-        cursor = conn.execute(
-            "DELETE FROM refresh_tokens WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+        cursor.execute(
+            "DELETE FROM refresh_tokens WHERE deleted_at IS NOT NULL AND deleted_at < %s",
             (cutoff_str,)
         )
         deleted_count += cursor.rowcount
         
         # Delete old soft-deleted sessions
-        cursor = conn.execute(
-            "DELETE FROM sessions WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+        cursor.execute(
+            "DELETE FROM sessions WHERE deleted_at IS NOT NULL AND deleted_at < %s",
             (cutoff_str,)
         )
         deleted_count += cursor.rowcount
@@ -163,27 +166,28 @@ def get_deletion_audit(table_name=None, user_id=None, days_back=30):
     """
     conn = get_db()
     try:
+        cursor = conn.cursor()
         query = "SELECT * FROM deletion_audit WHERE 1=1"
         params = []
         
         if table_name:
-            query += " AND table_name = ?"
+            query += " AND table_name = %s"
             params.append(table_name)
         
         if user_id:
-            query += " AND user_id = ?"
+            query += " AND user_id = %s"
             params.append(user_id)
         
         # Filter by date
         cutoff = datetime.now(timezone.utc)
         cutoff = cutoff.replace(day=cutoff.day - days_back)
         cutoff_str = cutoff.isoformat()
-        query += " AND deleted_at > ?"
+        query += " AND deleted_at > %s"
         params.append(cutoff_str)
         
         query += " ORDER BY deleted_at DESC"
         
-        cursor = conn.execute(query, params)
+        cursor.execute(query, params)
         records = cursor.fetchall()
         
         return records
@@ -194,12 +198,13 @@ def is_user_deleted(user_id):
     """Check if user is soft-deleted"""
     conn = get_db()
     try:
-        cursor = conn.execute(
-            "SELECT deleted_at FROM users WHERE id = ?",
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT deleted_at FROM users WHERE id = %s",
             (user_id,)
         )
         row = cursor.fetchone()
-        return row and row[0] is not None
+        return row and row['deleted_at'] is not None
     finally:
         conn.close()
 

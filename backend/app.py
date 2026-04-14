@@ -648,8 +648,10 @@ def add_security_headers(response):
 
 def set_auth_cookies(response, access_token, refresh_token, csrf_token):
     secure = request.is_secure
-    response.set_cookie("access_token", access_token, httponly=True, secure=secure, samesite="Strict", path="/", max_age=900)
-    response.set_cookie("refresh_token", refresh_token, httponly=True, secure=secure, samesite="Strict", path="/api/auth/refresh", max_age=604800)
+    # Use Lax for development (allows cross-origin), Strict for production
+    samesite = "Lax" if ENVIRONMENT == "development" else "Strict"
+    response.set_cookie("access_token", access_token, httponly=True, secure=secure, samesite=samesite, path="/", max_age=900)
+    response.set_cookie("refresh_token", refresh_token, httponly=True, secure=secure, samesite=samesite, path="/api/auth/refresh", max_age=604800)
     response.set_cookie("csrf_token", csrf_token, httponly=False, secure=secure, samesite="Lax", path="/")
     return response
 

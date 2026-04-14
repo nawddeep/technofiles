@@ -3,7 +3,7 @@ FIX 2.23: Onboarding service with JSON schema validation
 Handles flexible onboarding data storage with validation
 """
 import json
-import sqlite3
+import psycopg2
 from database import get_db
 
 # Schema for onboarding data - defines valid structure
@@ -69,10 +69,11 @@ def save_onboarding(user_id, onboarding_data):
     
     conn = get_db()
     try:
+        cursor = conn.cursor()
         data_json = json.dumps(onboarding_data)
-        cursor = conn.execute(
+        cursor.execute(
             """INSERT INTO onboarding_data (user_id, learning_goals, preferred_topics, skill_level, preferred_language)
-               VALUES (?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s)""",
             (
                 user_id,
                 json.dumps(onboarding_data.get("learning_goals", [])),
@@ -83,8 +84,8 @@ def save_onboarding(user_id, onboarding_data):
         )
         
         # Also update users table for backward compatibility
-        conn.execute(
-            "UPDATE users SET is_onboarded = 1, onboarding_data = ? WHERE id = ?",
+        cursor.execute(
+            "UPDATE users SET is_onboarded = TRUE, onboarding_data = %s WHERE id = %s",
             (data_json, user_id)
         )
         conn.commit()
@@ -95,31 +96,32 @@ def get_onboarding(user_id):
     """Retrieve onboarding data for user"""
     conn = get_db()
     try:
+        cursor = conn.cursor()
         # Try new table first
-        cursor = conn.execute(
+        cursor.execute(
             """SELECT learning_goals, preferred_topics, skill_level, preferred_language
-               FROM onboarding_data WHERE user_id = ?""",
+               FROM onboarding_data WHERE user_id = %s""",
             (user_id,)
         )
         row = cursor.fetchone()
         
         if row:
             return {
-                "learning_goals": json.loads(row[0]) if row[0] else [],
-                "preferred_topics": json.loads(row[1]) if row[1] else [],
-                "skill_level": row[2],
-                "preferred_language": row[3]
+                "learning_goals": json.loads(row['learning_goals']) if row['learning_goals'] else [],
+                "preferred_topics": json.loads(row['preferred_topics']) if row['preferred_topics'] else [],
+                "skill_level": row['skill_level'],
+                "preferred_language": row['preferred_language']
             }
         
         # Fallback to old users table
-        cursor = conn.execute(
-            "SELECT onboarding_data FROM users WHERE id = ?",
+        cursor.execute(
+            "SELECT onboarding_data FROM users WHERE id = %s",
             (user_id,)
         )
         row = cursor.fetchone()
         
-        if row and row[0]:
-            return json.loads(row[0])
+        if row and row['onboarding_data']:
+            return json.loads(row['onboarding_data'])
         
         return None
     finally:
@@ -129,11 +131,12 @@ def get_users_by_skill_level(skill_level):
     """Find users by skill level - useful for cohort-based learning"""
     conn = get_db()
     try:
-        cursor = conn.execute(
-            "SELECT user_id FROM onboarding_data WHERE skill_level = ?",
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id FROM onboarding_data WHERE skill_level = %s",
             (skill_level,)
         )
-        return [row[0] for row in cursor.fetchall()]
+        return [row['user_id'] for row in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -141,13 +144,13 @@ def get_users_interested_in_topic(topic):
     """Find users interested in a specific topic"""
     conn = get_db()
     try:
-        # For SQLite, use LIKE with JSON array search
-        # For PostgreSQL, use @> JSONB operator
-        cursor = conn.execute(
+        cursor = conn.cursor()
+        # For PostgreSQL, use ILIKE for case-insensitive search in JSON text
+        cursor.execute(
             """SELECT user_id FROM onboarding_data 
-               WHERE preferred_topics LIKE ?""",
+               WHERE preferred_topics::text ILIKE %s""",
             (f'%{topic}%',)
         )
-        return [row[0] for row in cursor.fetchall()]
+        return [row['user_id'] for row in cursor.fetchall()]
     finally:
         conn.close()
