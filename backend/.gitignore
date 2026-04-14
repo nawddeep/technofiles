@@ -1,0 +1,23 @@
+# Environment variables — NEVER commit real .env
+.env
+
+# Database files — contain real user data
+*.db
+*.sqlite
+*.sqlite3
+saaita.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# OS files
+.DS_Store
+Thumbs.db

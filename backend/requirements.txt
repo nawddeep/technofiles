@@ -1,0 +1,13 @@
+flask>=3.0.0
+flask-cors>=4.0.0
+flask-limiter>=3.5.0
+python-dotenv>=1.0.0
+google-generativeai>=0.7.0
+PyJWT>=2.8.0
+argon2-cffi>=23.1.0
+redis>=5.0.0
+psycopg2-binary>=2.9.0
+# FIX 2.19: Testing & coverage
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-timeout>=2.1.0
