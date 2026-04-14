@@ -3,6 +3,10 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+
+# Load .env file immediately
+load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/saaita")
 

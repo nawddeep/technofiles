@@ -385,7 +385,7 @@ def require_auth(f):
             "id": row["id"], "full_name": row["full_name"], "email": row["email"],
             "is_onboarded": bool(row["is_onboarded"]), "is_verified": bool(row["is_verified"]),
             "onboarding_data": row["onboarding_data"] or "",
-            "member_since": row["created_at"][:10] if row["created_at"] else "\u2014"
+            "member_since": row["created_at"].isoformat()[:10] if row["created_at"] else "\u2014"
         }
         return f(user, *args, **kwargs)
     return decorated
@@ -493,7 +493,7 @@ def check_brute_force(email, ip_address):
             "SELECT COUNT(*) as cnt FROM login_attempts WHERE email = %s AND success = FALSE AND timestamp > %s",
             (email, cutoff)
         )
-        email_count = cursor.fetchone()[0]
+        email_count = cursor.fetchone()['cnt']
         if email_count >= 5:
             conn.close()
             return True, "Account temporarily locked. Try again in 15 minutes."
@@ -501,7 +501,7 @@ def check_brute_force(email, ip_address):
         "SELECT COUNT(*) as cnt FROM login_attempts WHERE ip_address = %s AND success = FALSE AND timestamp > %s",
         (ip_address, cutoff)
     )
-    ip_count = cursor.fetchone()[0]
+    ip_count = cursor.fetchone()['cnt']
     if ip_count >= 10:
         conn.close()
         return True, "Too many failed attempts from this IP."
@@ -776,7 +776,7 @@ def signup():
             "INSERT INTO users (full_name, email, password_hash) VALUES (%s, %s, %s) RETURNING id",
             (full_name, email, pwd_hash)
         )
-        user_id = cursor.fetchone()[0]
+        user_id = cursor.fetchone()['id']
         conn.commit()
     except psycopg2.IntegrityError:
         conn.close()
