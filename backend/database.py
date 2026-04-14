@@ -1,111 +1,112 @@
-"""SAAITA Database - Security Hardened Schema"""
-import sqlite3
+"""SAAITA Database - PostgreSQL Security Hardened Schema"""
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saaita.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/saaita")
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    """Get PostgreSQL database connection with RealDictCursor for dict-like row access"""
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.cursor_factory = RealDictCursor
     return conn
 
 
 def init_db():
+    """Initialize PostgreSQL database with all required tables"""
     conn = get_db()
     cursor = conn.cursor()
 
-    # Users
+    # Users table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             full_name TEXT NOT NULL,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            is_onboarded INTEGER DEFAULT 0,
-            is_verified INTEGER DEFAULT 0,
+            is_onboarded BOOLEAN DEFAULT FALSE,
+            is_verified BOOLEAN DEFAULT FALSE,
             onboarding_data TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # Chat messages
+    # Chat messages table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             sender TEXT NOT NULL CHECK(sender IN ('user', 'ai')),
             text TEXT NOT NULL,
             chat_group_id TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
 
-    # Refresh tokens (JWT)
+    # Refresh tokens (JWT) table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS refresh_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             token_jti TEXT UNIQUE NOT NULL,
-            expires_at TEXT NOT NULL,
-            is_revoked INTEGER DEFAULT 0,
+            expires_at TIMESTAMP NOT NULL,
+            is_revoked BOOLEAN DEFAULT FALSE,
             device_info TEXT DEFAULT '',
             ip_address TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
 
-    # Sessions
+    # Sessions table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             session_id TEXT UNIQUE NOT NULL,
             user_id INTEGER NOT NULL,
-            expires_at TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1,
+            expires_at TIMESTAMP NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
             user_agent TEXT DEFAULT '',
             ip_address TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
 
-    # Password reset tokens
+    # Password reset tokens table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             token TEXT UNIQUE NOT NULL,
-            expires_at TEXT NOT NULL,
-            is_used INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TIMESTAMP NOT NULL,
+            is_used BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
 
-    # Email verification tokens
+    # Email verification tokens table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS email_verification_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             token TEXT UNIQUE NOT NULL,
-            expires_at TEXT NOT NULL,
-            is_used INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TIMESTAMP NOT NULL,
+            is_used BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
 
-    # Audit logs
+    # Audit logs table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS audit_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             level TEXT DEFAULT 'INFO',
             event_type TEXT NOT NULL,
             user_id INTEGER,
@@ -116,69 +117,69 @@ def init_db():
             action TEXT,
             details TEXT,
             session_id TEXT,
-            timestamp TEXT DEFAULT (datetime('now'))
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # Login attempts (brute force tracking)
+    # Login attempts (brute force tracking) table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS login_attempts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             email TEXT NOT NULL,
             ip_address TEXT NOT NULL,
-            success INTEGER NOT NULL,
+            success BOOLEAN NOT NULL,
             user_agent TEXT DEFAULT '',
-            timestamp TEXT DEFAULT (datetime('now'))
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # API keys (rotation support)
+    # API keys (rotation support) table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS api_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             key_hash TEXT NOT NULL,
             key_prefix TEXT NOT NULL,
             name TEXT DEFAULT 'default',
-            is_active INTEGER DEFAULT 1,
-            last_used_at TEXT,
-            expires_at TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
+            is_active BOOLEAN DEFAULT TRUE,
+            last_used_at TIMESTAMP,
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
 
-    # Security alerts
+    # Security alerts table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS security_alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             severity TEXT NOT NULL DEFAULT 'INFO',
             alert_type TEXT NOT NULL,
             description TEXT,
             ip_address TEXT,
             user_id INTEGER,
             details TEXT,
-            is_resolved INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now'))
+            is_resolved BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # File uploads
+    # File uploads table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS file_uploads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER,
             original_filename TEXT NOT NULL,
             stored_filename TEXT NOT NULL,
             file_path TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             mime_type TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
         )
     """)
 
-    # Indexes
+    # Create indexes for performance
     indexes = [
         "CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)",
@@ -195,24 +196,39 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_apikeys_user ON api_keys(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_alerts_severity ON security_alerts(severity)",
     ]
-    for idx in indexes:
-        cursor.execute(idx)
+    
+    for idx_sql in indexes:
+        cursor.execute(idx_sql)
 
     conn.commit()
     conn.close()
-    print("[DB] Database initialized with security tables.")
+    print("[DB] PostgreSQL database initialized with security tables.")
 
 
 def cleanup_expired_data():
     """Remove expired tokens and old data. Called periodically."""
     conn = get_db()
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute("DELETE FROM refresh_tokens WHERE expires_at < ? AND is_revoked = 1", (now,))
-    conn.execute("DELETE FROM password_reset_tokens WHERE expires_at < ?", (now,))
-    conn.execute("DELETE FROM email_verification_tokens WHERE expires_at < ?", (now,))
-    conn.execute("UPDATE sessions SET is_active = 0 WHERE expires_at < ?", (now,))
-    cutoff = (datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - __import__('datetime').timedelta(days=90)).isoformat()
-    conn.execute("DELETE FROM login_attempts WHERE timestamp < ?", (cutoff,))
-    conn.execute("DELETE FROM audit_logs WHERE timestamp < ? AND level = 'INFO'", (cutoff,))
+    cursor = conn.cursor()
+    now = datetime.now(timezone.utc)
+    
+    # Delete expired and revoked refresh tokens
+    cursor.execute("DELETE FROM refresh_tokens WHERE expires_at < %s AND is_revoked = TRUE", (now,))
+    
+    # Delete expired password reset tokens
+    cursor.execute("DELETE FROM password_reset_tokens WHERE expires_at < %s", (now,))
+    
+    # Delete expired email verification tokens
+    cursor.execute("DELETE FROM email_verification_tokens WHERE expires_at < %s", (now,))
+    
+    # Mark expired sessions as inactive
+    cursor.execute("UPDATE sessions SET is_active = FALSE WHERE expires_at < %s", (now,))
+    
+    # Delete login attempts older than 90 days
+    cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=90)
+    cursor.execute("DELETE FROM login_attempts WHERE timestamp < %s", (cutoff,))
+    
+    # Delete old INFO-level audit logs older than 90 days
+    cursor.execute("DELETE FROM audit_logs WHERE timestamp < %s AND level = 'INFO'", (cutoff,))
+    
     conn.commit()
     conn.close()

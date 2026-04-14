@@ -1,5 +1,5 @@
 """SAAITA Backend - Security Hardened"""
-import re, json, base64, sqlite3, uuid, os, secrets, html, time, logging
+import re, json, base64, psycopg2, uuid, os, secrets, html, time, logging
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from flask import Flask, request, jsonify
@@ -253,12 +253,15 @@ def generate_refresh_token(user_id, device_info="", ip_address=""):
     jti = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     conn = get_db()
-    conn.execute(
-        "INSERT INTO refresh_tokens (user_id, token_jti, expires_at, device_info, ip_address) VALUES (?, ?, ?, ?, ?)",
-        (user_id, jti, expires_at.isoformat(), device_info, ip_address)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO refresh_tokens (user_id, token_jti, expires_at, device_info, ip_address) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, jti, expires_at.isoformat(), device_info, ip_address)
+        )
+        conn.commit()
+    finally:
+        conn.close()
     payload = {
         "user_id": user_id, "type": "refresh", "jti": jti,
         "exp": expires_at, "iat": datetime.now(timezone.utc)
@@ -280,10 +283,12 @@ def refresh_access_token(refresh_token_str):
     jti = payload.get("jti")
     user_id = payload.get("user_id")
     conn = get_db()
-    row = conn.execute(
-        "SELECT id, user_id, is_revoked, expires_at FROM refresh_tokens WHERE token_jti = ?",
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, user_id, is_revoked, expires_at FROM refresh_tokens WHERE token_jti = %s",
         (jti,)
-    ).fetchone()
+    )
+    row = cursor.fetchone()
     if not row:
         conn.close()
         return None, "Refresh token not found"
@@ -291,14 +296,15 @@ def refresh_access_token(refresh_token_str):
         conn.close()
         return None, "Refresh token has been revoked"
     if datetime.now(timezone.utc) > datetime.fromisoformat(row["expires_at"]):
-        conn.execute("DELETE FROM refresh_tokens WHERE token_jti = ?", (jti,))
+        cursor.execute("DELETE FROM refresh_tokens WHERE token_jti = %s", (jti,))
         conn.commit()
         conn.close()
         return None, "Refresh token has expired"
-    user_row = conn.execute(
-        "SELECT id, full_name, email, is_onboarded, is_verified, onboarding_data FROM users WHERE id = ?",
+    cursor.execute(
+        "SELECT id, full_name, email, is_onboarded, is_verified, onboarding_data FROM users WHERE id = %s",
         (user_id,)
-    ).fetchone()
+    )
+    user_row = cursor.fetchone()
     conn.close()
     if not user_row:
         return None, "User not found"
@@ -314,9 +320,12 @@ def refresh_access_token(refresh_token_str):
 
 def revoke_all_refresh_tokens(user_id):
     conn = get_db()
-    conn.execute("UPDATE refresh_tokens SET is_revoked = 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE refresh_tokens SET is_revoked = TRUE WHERE user_id = %s", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # === PASSWORD HASHING ===
@@ -363,10 +372,12 @@ def require_auth(f):
             return jsonify({"error": "Invalid or expired token."}), 401
         user_id = payload.get("user_id")
         conn = get_db()
-        row = conn.execute(
-            "SELECT id, full_name, email, is_onboarded, is_verified, onboarding_data, created_at FROM users WHERE id = ?",
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, full_name, email, is_onboarded, is_verified, onboarding_data, created_at FROM users WHERE id = %s",
             (user_id,)
-        ).fetchone()
+        )
+        row = cursor.fetchone()
         conn.close()
         if not row:
             return jsonify({"error": "User not found."}), 401
@@ -445,8 +456,9 @@ def audit_log(event_type, user_id=None, ip_address=None, user_agent=None,
     # FIX 1.10: Raise exception if audit log fails (don't silently drop security events)
     conn = get_db()
     try:
-        conn.execute(
-            "INSERT INTO audit_logs (level, event_type, user_id, ip_address, user_agent, resource_type, resource_id, action, details, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO audit_logs (level, event_type, user_id, ip_address, user_agent, resource_type, resource_id, action, details, session_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (level, event_type, user_id, ip_address, user_agent, resource_type, resource_id, action, details, session_id)
         )
         conn.commit()
@@ -461,29 +473,35 @@ def audit_log(event_type, user_id=None, ip_address=None, user_agent=None,
 # === BRUTE FORCE PROTECTION ===
 def record_login_attempt(email, ip_address, success, user_agent=""):
     conn = get_db()
-    conn.execute(
-        "INSERT INTO login_attempts (email, ip_address, success, user_agent) VALUES (?, ?, ?, ?)",
-        (email, ip_address, success, user_agent)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO login_attempts (email, ip_address, success, user_agent) VALUES (%s, %s, %s, %s)",
+            (email, ip_address, success, user_agent)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def check_brute_force(email, ip_address):
     conn = get_db()
+    cursor = conn.cursor()
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
     if email:
-        email_count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM login_attempts WHERE email = ? AND success = 0 AND timestamp > ?",
+        cursor.execute(
+            "SELECT COUNT(*) as cnt FROM login_attempts WHERE email = %s AND success = FALSE AND timestamp > %s",
             (email, cutoff)
-        ).fetchone()["cnt"]
+        )
+        email_count = cursor.fetchone()[0]
         if email_count >= 5:
             conn.close()
             return True, "Account temporarily locked. Try again in 15 minutes."
-    ip_count = conn.execute(
-        "SELECT COUNT(*) as cnt FROM login_attempts WHERE ip_address = ? AND success = 0 AND timestamp > ?",
+    cursor.execute(
+        "SELECT COUNT(*) as cnt FROM login_attempts WHERE ip_address = %s AND success = FALSE AND timestamp > %s",
         (ip_address, cutoff)
-    ).fetchone()["cnt"]
+    )
+    ip_count = cursor.fetchone()[0]
     if ip_count >= 10:
         conn.close()
         return True, "Too many failed attempts from this IP."
@@ -496,34 +514,42 @@ def create_session(user_id, user_agent="", ip_address=""):
     session_id = str(uuid.uuid4())
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     conn = get_db()
-    conn.execute(
-        "INSERT INTO sessions (session_id, user_id, expires_at, user_agent, ip_address) VALUES (?, ?, ?, ?, ?)",
-        (session_id, user_id, expires_at.isoformat(), user_agent, ip_address)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO sessions (session_id, user_id, expires_at, user_agent, ip_address) VALUES (%s, %s, %s, %s, %s)",
+            (session_id, user_id, expires_at.isoformat(), user_agent, ip_address)
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return session_id
 
 
 def invalidate_all_sessions(user_id, except_session_id=None):
     conn = get_db()
-    if except_session_id:
-        conn.execute(
-            "UPDATE sessions SET is_active = 0 WHERE user_id = ? AND session_id != ?",
-            (user_id, except_session_id)
-        )
-    else:
-        conn.execute("UPDATE sessions SET is_active = 0 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        if except_session_id:
+            cursor.execute(
+                "UPDATE sessions SET is_active = FALSE WHERE user_id = %s AND session_id != %s",
+                (user_id, except_session_id)
+            )
+        else:
+            cursor.execute("UPDATE sessions SET is_active = FALSE WHERE user_id = %s", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_user_sessions(user_id):
     conn = get_db()
-    rows = conn.execute(
-        "SELECT session_id, created_at, user_agent, ip_address FROM sessions WHERE user_id = ? AND is_active = 1",
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT session_id, created_at, user_agent, ip_address FROM sessions WHERE user_id = %s AND is_active = TRUE",
         (user_id,)
-    ).fetchall()
+    )
+    rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -557,13 +583,16 @@ def generate_password_reset_token(user_id):
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
     conn = get_db()
-    conn.execute("UPDATE password_reset_tokens SET is_used = 1 WHERE user_id = ? AND is_used = 0", (user_id,))
-    conn.execute(
-        "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (?, ?, ?)",
-        (user_id, token, expires_at.isoformat())
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE password_reset_tokens SET is_used = TRUE WHERE user_id = %s AND is_used = FALSE", (user_id,))
+        cursor.execute(
+            "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (%s, %s, %s)",
+            (user_id, token, expires_at.isoformat())
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return token
 
 
@@ -571,12 +600,15 @@ def generate_email_verification_token(user_id):
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     conn = get_db()
-    conn.execute(
-        "INSERT INTO email_verification_tokens (user_id, token, expires_at) VALUES (?, ?, ?)",
-        (user_id, token, expires_at.isoformat())
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO email_verification_tokens (user_id, token, expires_at) VALUES (%s, %s, %s)",
+            (user_id, token, expires_at.isoformat())
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return token
 
 
@@ -584,8 +616,9 @@ def generate_email_verification_token(user_id):
 def create_security_alert(severity, alert_type, description, ip_address=None, user_id=None, details=None):
     try:
         conn = get_db()
-        conn.execute(
-            "INSERT INTO security_alerts (severity, alert_type, description, ip_address, user_id, details) VALUES (?, ?, ?, ?, ?, ?)",
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO security_alerts (severity, alert_type, description, ip_address, user_id, details) VALUES (%s, %s, %s, %s, %s, %s)",
             (severity, alert_type, description, ip_address, user_id, details)
         )
         conn.commit()
@@ -663,10 +696,12 @@ def get_or_create_ai_session(session_id, user_id, onboarding_data=""):
         return json.loads(cached)
     
     conn = get_db()
-    rows = conn.execute(
-        "SELECT sender, text FROM chat_messages WHERE user_id = ? ORDER BY created_at ASC",
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT sender, text FROM chat_messages WHERE user_id = %s ORDER BY created_at ASC",
         (user_id,)
-    ).fetchall()
+    )
+    rows = cursor.fetchall()
     conn.close()
     
     formatted_history = []
@@ -736,13 +771,14 @@ def signup():
     pwd_hash = hash_password(password)
     conn = get_db()
     try:
-        cursor = conn.execute(
-            "INSERT INTO users (full_name, email, password_hash) VALUES (?, ?, ?)",
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO users (full_name, email, password_hash) VALUES (%s, %s, %s) RETURNING id",
             (full_name, email, pwd_hash)
         )
-        user_id = cursor.lastrowid
+        user_id = cursor.fetchone()[0]
         conn.commit()
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         conn.close()
         return jsonify({"error": "This email is already registered."}), 409
     finally:
@@ -795,10 +831,12 @@ def login():
         audit_log("LOGIN_BLOCKED", ip_address=ip_address, details=email, level="WARN")
         return jsonify({"error": lock_msg}), 429
     conn = get_db()
-    row = conn.execute(
-        "SELECT id, full_name, password_hash, is_onboarded, is_verified FROM users WHERE email = ?",
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, full_name, password_hash, is_onboarded, is_verified FROM users WHERE email = %s",
         (email,)
-    ).fetchone()
+    )
+    row = cursor.fetchone()
     conn.close()
     if not row or not verify_password(row["password_hash"], password):
         record_login_attempt(email, ip_address, False, user_agent)
@@ -872,12 +910,15 @@ def complete_onboarding(user):
     if has_null_bytes(data):
         return jsonify({"error": "Invalid input data."}), 400
     conn = get_db()
-    conn.execute(
-        "UPDATE users SET is_onboarded = 1, onboarding_data = ? WHERE id = ?",
-        (json.dumps(data), user["id"])
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET is_onboarded = TRUE, onboarding_data = %s WHERE id = %s",
+            (json.dumps(data), user["id"])
+        )
+        conn.commit()
+    finally:
+        conn.close()
     audit_log("ONBOARDING_COMPLETE", user_id=user["id"], ip_address=get_ip())
     return jsonify({"message": "Onboarding completed.", "user": {**user, "is_onboarded": True}})
 
@@ -896,18 +937,23 @@ def change_password(user):
     if not ok:
         return jsonify({"error": msg}), 400
     conn = get_db()
-    row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user["id"],)).fetchone()
+    cursor = conn.cursor()
+    cursor.execute("SELECT password_hash FROM users WHERE id = %s", (user["id"],))
+    row = cursor.fetchone()
     conn.close()
     if not verify_password(row["password_hash"], current_password):
         return jsonify({"error": "Current password is incorrect."}), 401
     new_hash = hash_password(new_password)
     conn = get_db()
-    conn.execute(
-        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-        (new_hash, datetime.now(timezone.utc).isoformat(), user["id"])
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET password_hash = %s, updated_at = %s WHERE id = %s",
+            (new_hash, datetime.now(timezone.utc).isoformat(), user["id"])
+        )
+        conn.commit()
+    finally:
+        conn.close()
     revoke_all_refresh_tokens(user["id"])
     invalidate_all_sessions(user["id"])
     audit_log("PASSWORD_CHANGED", user_id=user["id"], ip_address=get_ip(), level="WARN")
@@ -923,7 +969,9 @@ def forgot_password():
         return jsonify({"error": msg}), 400
     email = data.get("email", "").strip().lower()
     conn = get_db()
-    row = conn.execute("SELECT id, email FROM users WHERE email = ?", (email,)).fetchone()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, email FROM users WHERE email = %s", (email,))
+    row = cursor.fetchone()
     if row:
         token = generate_password_reset_token(row["id"])
         send_email(email, "Reset your SAAITA password",
@@ -946,18 +994,20 @@ def reset_password():
     if not ok:
         return jsonify({"error": msg}), 400
     conn = get_db()
-    row = conn.execute(
-        "SELECT id, user_id, is_used, expires_at FROM password_reset_tokens WHERE token = ?",
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, user_id, is_used, expires_at FROM password_reset_tokens WHERE token = %s",
         (token,)
-    ).fetchone()
+    )
+    row = cursor.fetchone()
     if not row or row["is_used"] or datetime.now(timezone.utc) > datetime.fromisoformat(row["expires_at"]):
         conn.close()
         return jsonify({"error": "Invalid or expired reset token."}), 400
     user_id = row["user_id"]
-    conn.execute("UPDATE password_reset_tokens SET is_used = 1 WHERE id = ?", (row["id"],))
+    cursor.execute("UPDATE password_reset_tokens SET is_used = TRUE WHERE id = %s", (row["id"],))
     new_hash = hash_password(new_password)
-    conn.execute(
-        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+    cursor.execute(
+        "UPDATE users SET password_hash = %s, updated_at = %s WHERE id = %s",
         (new_hash, datetime.now(timezone.utc).isoformat(), user_id)
     )
     conn.commit()
@@ -977,15 +1027,17 @@ def verify_email_route():
         return jsonify({"error": msg}), 400
     token = data.get("token", "")
     conn = get_db()
-    row = conn.execute(
-        "SELECT id, user_id, is_used, expires_at FROM email_verification_tokens WHERE token = ?",
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, user_id, is_used, expires_at FROM email_verification_tokens WHERE token = %s",
         (token,)
-    ).fetchone()
+    )
+    row = cursor.fetchone()
     if not row or row["is_used"] or datetime.now(timezone.utc) > datetime.fromisoformat(row["expires_at"]):
         conn.close()
         return jsonify({"error": "Invalid or expired verification token."}), 400
-    conn.execute("UPDATE email_verification_tokens SET is_used = 1 WHERE id = ?", (row["id"],))
-    conn.execute("UPDATE users SET is_verified = 1 WHERE id = ?", (row["user_id"],))
+    cursor.execute("UPDATE email_verification_tokens SET is_used = TRUE WHERE id = %s", (row["id"],))
+    cursor.execute("UPDATE users SET is_verified = TRUE WHERE id = %s", (row["user_id"],))
     conn.commit()
     conn.close()
     audit_log("EMAIL_VERIFIED", user_id=row["user_id"], ip_address=get_ip())
@@ -1000,7 +1052,9 @@ def resend_verification():
     if not email:
         return jsonify({"error": "Email is required."}), 400
     conn = get_db()
-    row = conn.execute("SELECT id, is_verified FROM users WHERE email = ?", (email,)).fetchone()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, is_verified FROM users WHERE email = %s", (email,))
+    row = cursor.fetchone()
     if row and not row["is_verified"]:
         token = generate_email_verification_token(row["id"])
         send_email(email, "Verify your SAAITA account",
@@ -1020,12 +1074,15 @@ def list_sessions(user):
 @csrf_protect
 def revoke_session(user, session_id):
     conn = get_db()
-    conn.execute(
-        "UPDATE sessions SET is_active = 0 WHERE session_id = ? AND user_id = ?",
-        (session_id, user["id"])
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE sessions SET is_active = FALSE WHERE session_id = %s AND user_id = %s",
+            (session_id, user["id"])
+        )
+        conn.commit()
+    finally:
+        conn.close()
     audit_log("SESSION_REVOKED", user_id=user["id"], ip_address=get_ip(), details=session_id)
     return jsonify({"message": "Session revoked."})
 
@@ -1076,22 +1133,28 @@ def chat_message(user):
         db_prompt += f" [{len(images)} image(s)]"
     final_prompt = prompt + image_context
     conn = get_db()
-    conn.execute(
-        "INSERT INTO chat_messages (user_id, sender, text, chat_group_id) VALUES (?, ?, ?, ?)",
-        (user["id"], "user", db_prompt, ai_sess["chat_group_id"])
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO chat_messages (user_id, sender, text, chat_group_id) VALUES (%s, %s, %s, %s)",
+            (user["id"], "user", db_prompt, ai_sess["chat_group_id"])
+        )
+        conn.commit()
+    finally:
+        conn.close()
     try:
         response = ai_sess["chat"].send_message(final_prompt)
         ai_text = response.text
         conn = get_db()
-        conn.execute(
-            "INSERT INTO chat_messages (user_id, sender, text, chat_group_id) VALUES (?, ?, ?, ?)",
-            (user["id"], "ai", ai_text, ai_sess["chat_group_id"])
-        )
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO chat_messages (user_id, sender, text, chat_group_id) VALUES (%s, %s, %s, %s)",
+                (user["id"], "ai", ai_text, ai_sess["chat_group_id"])
+            )
+            conn.commit()
+        finally:
+            conn.close()
         audit_log("CHAT_MESSAGE", user_id=user["id"], ip_address=get_ip(), resource_type="chat")
         return jsonify({"text": ai_text})
     except Exception as e:
@@ -1104,10 +1167,12 @@ def chat_message(user):
 # @require_verified_email  # Allow history before email verification
 def chat_history(user):
     conn = get_db()
-    rows = conn.execute(
-        "SELECT sender, text FROM chat_messages WHERE user_id = ? ORDER BY created_at ASC",
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT sender, text FROM chat_messages WHERE user_id = %s ORDER BY created_at ASC",
         (user["id"],)
-    ).fetchall()
+    )
+    rows = cursor.fetchall()
     conn.close()
     return jsonify({"messages": [{"sender": r["sender"], "text": r["text"]} for r in rows]})
 
@@ -1154,12 +1219,15 @@ def upload_file(user):
     with open(file_path, "wb") as f:
         f.write(file_bytes)
     conn = get_db()
-    conn.execute(
-        "INSERT INTO file_uploads (user_id, original_filename, stored_filename, file_path, file_size, mime_type) VALUES (?, ?, ?, ?, ?, ?)",
-        (user["id"], file.filename, stored_name, file_path, len(file_bytes), file.content_type)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO file_uploads (user_id, original_filename, stored_filename, file_path, file_size, mime_type) VALUES (%s, %s, %s, %s, %s, %s)",
+            (user["id"], file.filename, stored_name, file_path, len(file_bytes), file.content_type)
+        )
+        conn.commit()
+    finally:
+        conn.close()
     audit_log("FILE_UPLOAD", ip_address=get_ip(), resource_type="file")
     return jsonify({"message": "File uploaded.", "filename": stored_name}), 201
 
