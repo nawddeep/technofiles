@@ -39,12 +39,15 @@ def generate_refresh_token(user_id, device_info="", ip_address=""):
     jti = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     conn = get_db()
-    conn.execute(
-        "INSERT INTO refresh_tokens (user_id, token_jti, expires_at, device_info, ip_address) VALUES (?, ?, ?, ?, ?)",
-        (user_id, jti, expires_at.isoformat(), device_info, ip_address)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO refresh_tokens (user_id, token_jti, expires_at, device_info, ip_address) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, jti, expires_at.isoformat(), device_info, ip_address)
+        )
+        conn.commit()
+    finally:
+        conn.close()
     payload = {
         "user_id": user_id,
         "type": "refresh",
@@ -74,27 +77,29 @@ def refresh_access_token(refresh_token_str):
     jti = payload.get("jti")
     user_id = payload.get("user_id")
     conn = get_db()
-    row = conn.execute(
-        "SELECT id, user_id, is_revoked, expires_at FROM refresh_tokens WHERE token_jti = ?",
-        (jti,)
-    ).fetchone()
-    if not row:
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, user_id, is_revoked, expires_at FROM refresh_tokens WHERE token_jti = %s",
+            (jti,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None, "Refresh token not found"
+        if row["is_revoked"]:
+            return None, "Refresh token has been revoked"
+        expires_at = datetime.fromisoformat(row["expires_at"]) if isinstance(row["expires_at"], str) else row["expires_at"]
+        if datetime.now(timezone.utc) > expires_at:
+            cursor.execute("DELETE FROM refresh_tokens WHERE token_jti = %s", (jti,))
+            conn.commit()
+            return None, "Refresh token has expired"
+        cursor.execute(
+            "SELECT id, full_name, email, is_onboarded, is_verified, onboarding_data FROM users WHERE id = %s",
+            (user_id,)
+        )
+        user_row = cursor.fetchone()
+    finally:
         conn.close()
-        return None, "Refresh token not found"
-    if row["is_revoked"]:
-        conn.close()
-        return None, "Refresh token has been revoked"
-    expires_at = datetime.fromisoformat(row["expires_at"])
-    if datetime.now(timezone.utc) > expires_at:
-        conn.execute("DELETE FROM refresh_tokens WHERE token_jti = ?", (jti,))
-        conn.commit()
-        conn.close()
-        return None, "Refresh token has expired"
-    user_row = conn.execute(
-        "SELECT id, full_name, email, is_onboarded, is_verified, onboarding_data FROM users WHERE id = ?",
-        (user_id,)
-    ).fetchone()
-    conn.close()
     if not user_row:
         return None, "User not found"
     new_access_token = generate_access_token(user_id, user_row["email"])
@@ -111,16 +116,22 @@ def refresh_access_token(refresh_token_str):
 
 def revoke_refresh_token(jti):
     conn = get_db()
-    conn.execute("UPDATE refresh_tokens SET is_revoked = 1 WHERE token_jti = ?", (jti,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE refresh_tokens SET is_revoked = TRUE WHERE token_jti = %s", (jti,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def revoke_all_refresh_tokens(user_id):
     conn = get_db()
-    conn.execute("UPDATE refresh_tokens SET is_revoked = 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE refresh_tokens SET is_revoked = TRUE WHERE user_id = %s", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def hash_password(password):
@@ -162,13 +173,18 @@ def require_auth(f):
             return jsonify({"error": "Invalid token type."}), 401
         user_id = payload.get("user_id")
         conn = get_db()
-        row = conn.execute(
-            "SELECT id, full_name, email, is_onboarded, is_verified, onboarding_data, created_at FROM users WHERE id = ?",
-            (user_id,)
-        ).fetchone()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, full_name, email, is_onboarded, is_verified, onboarding_data, created_at FROM users WHERE id = %s",
+                (user_id,)
+            )
+            row = cursor.fetchone()
+        finally:
+            conn.close()
         if not row:
             return jsonify({"error": "User not found."}), 401
+        created_at_str = row["created_at"].isoformat()[:10] if isinstance(row["created_at"], (str, object)) and row["created_at"] else "—"
         user = {
             "id": row["id"],
             "full_name": row["full_name"],
@@ -176,7 +192,7 @@ def require_auth(f):
             "is_onboarded": bool(row["is_onboarded"]),
             "is_verified": bool(row["is_verified"]),
             "onboarding_data": row["onboarding_data"] or "",
-            "member_since": row["created_at"][:10] if row["created_at"] else "—"
+            "member_since": created_at_str
         }
         return f(user, *args, **kwargs)
     return decorated

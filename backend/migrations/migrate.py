@@ -8,7 +8,6 @@ Usage:
 """
 import os
 import sys
-import sqlite3
 import glob
 from pathlib import Path
 
@@ -94,7 +93,7 @@ def apply_migration(version):
             cursor.execute(stmt)
         
         # Record migration
-        cursor.execute("INSERT INTO schema_version (version, description) VALUES (?, ?)", 
+        cursor.execute("INSERT INTO schema_version (version, description) VALUES (%s, %s)", 
                       (version, parts['comment'].strip()))
         conn.commit()
         print(f"✅ Applied migration: {version}")
@@ -125,7 +124,7 @@ def rollback_migration(version):
             cursor.execute(stmt)
         
         # Remove migration record
-        cursor.execute("DELETE FROM schema_version WHERE version = ?", (version,))
+        cursor.execute("DELETE FROM schema_version WHERE version = %s", (version,))
         conn.commit()
         print(f"✅ Rolled back migration: {version}")
         return True
