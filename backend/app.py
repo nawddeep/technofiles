@@ -233,7 +233,7 @@ def scan_file_content(file_bytes):
         pass
     executable_sigs = [b"MZ", b"\x7fELF"]
     for sig in executable_sigs:
-        if sample.startswith(sig):
+        if file_bytes.startswith(sig):
             return False, "Executable files are not allowed."
     return True, ""
 
@@ -465,7 +465,7 @@ def audit_log(event_type, user_id=None, ip_address=None, user_agent=None,
     except Exception as e:
         conn.rollback()
         logger.error(f"[CRITICAL] Audit log failed: {e}")
-        raise SystemExit(f"[FATAL] Audit logging failed - security event not recorded: {e}")
+        # Don't crash app, just log the error and continue
     finally:
         conn.close()
 
