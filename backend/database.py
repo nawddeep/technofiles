@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 # Load .env file immediately
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/saaita")
-
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise SystemExit("[FATAL] DATABASE_URL environment variable is required")
 
 def get_db():
     """Get PostgreSQL database connection with RealDictCursor for dict-like row access"""

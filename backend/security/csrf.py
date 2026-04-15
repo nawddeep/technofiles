@@ -1,49 +1,40 @@
-"""
-CSRF Protection System (Requirement 2)
-"""
 import secrets
 import os
+import time
 from functools import wraps
 from flask import request, jsonify
+from extensions import REDIS_AVAILABLE, redis_client, redis_fallback
 
-_csrf_tokens = {}
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",")] if os.getenv("ALLOWED_ORIGINS") else []
 
 def generate_csrf_token(session_id=""):
     token = secrets.token_urlsafe(32)
-    _csrf_tokens[token] = session_id
+    if REDIS_AVAILABLE and redis_client:
+        redis_client.setex(f"csrf:{token}", 3600, session_id)
+    else:
+        redis_fallback[f"csrf:{token}"] = (session_id, time.time() + 3600)
     return token
 
 def validate_csrf_token(token):
-    return token in _csrf_tokens
-
-def rotate_csrf_token(old_token, session_id=""):
-    if old_token in _csrf_tokens:
-        del _csrf_tokens[old_token]
-    return generate_csrf_token(session_id)
-
-def cleanup_csrf_tokens():
-    if len(_csrf_tokens) > 10000:
-        keys_to_remove = list(_csrf_tokens.keys())[:5000]
-        for key in keys_to_remove:
-            del _csrf_tokens[key]
+    if REDIS_AVAILABLE and redis_client:
+        return redis_client.exists(f"csrf:{token}") > 0
+    else:
+        if token in redis_fallback:
+            _, expiry = redis_fallback[token]
+            if time.time() < expiry:
+                return True
+            else:
+                del redis_fallback[token]
+        return False
 
 def validate_origin():
     origin = request.headers.get("Origin", "")
     referer = request.headers.get("Referer", "")
     if not origin and not referer:
         return True
-    allowed_origins = ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175"]
-    env_origins = os.environ.get("ALLOWED_ORIGINS", "")
-    if env_origins:
-        allowed_origins = env_origins.split(",")
     if origin:
-        return origin in allowed_origins
-    if referer:
-        for allowed in allowed_origins:
-            if referer.startswith(allowed):
-                return True
-        return False
-    return True
+        return origin in ALLOWED_ORIGINS
+    return any(referer.startswith(allowed) for allowed in ALLOWED_ORIGINS)
 
 def csrf_protect(f):
     @wraps(f)
@@ -59,7 +50,3 @@ def csrf_protect(f):
             return jsonify({"error": "Invalid CSRF token."}), 403
         return f(*args, **kwargs)
     return decorated
-
-def set_csrf_cookie(response, token):
-    response.set_cookie("csrf_token", token, samesite="Lax", httponly=False, secure=request.is_secure, path="/")
-    return response

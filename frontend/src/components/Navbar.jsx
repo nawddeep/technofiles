@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { createPortal } from 'react-dom';
 import { clearTokens } from '../services/api';
 
 const GOAL_LABELS = {
@@ -37,13 +36,12 @@ const Navbar = ({ activeView, setActiveView, user, onLogout }) => {
         } catch { return {}; }
     })();
 
-    // Render sidebar via portal directly into document.body
-    // This escapes overflow:hidden and any parent transforms that break position:fixed
-    const drawer = showProfile ? createPortal(
+    // Render drawer via standard fixed positioning
+    const drawer = showProfile ? (
         <>
             {/* Backdrop */}
             <div
-                style={{ position: 'fixed', inset: 0, zIndex: 9998 }}
+                className="fixed inset-0 z-[9998]"
                 onClick={() => setShowProfile(false)}
             />
 
@@ -115,8 +113,7 @@ const Navbar = ({ activeView, setActiveView, user, onLogout }) => {
                     </button>
                 </div>
             </div>
-        </>,
-        document.body
+        </>
     ) : null;
 
     return (

@@ -1,83 +1,82 @@
 -- Migration: 001_initial_schema.sql
--- Created: Initial database schema
--- FIX 2.16: Version-controlled schema changes
+-- Created: Initial database schema (PostgreSQL)
 
 -- Up:
 CREATE TABLE IF NOT EXISTS schema_version (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   version TEXT UNIQUE NOT NULL,
-  applied_at TEXT DEFAULT (datetime('now')),
+  applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   description TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   full_name TEXT NOT NULL,
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  is_onboarded INTEGER DEFAULT 0,
-  is_verified INTEGER DEFAULT 0,
+  is_onboarded BOOLEAN DEFAULT FALSE,
+  is_verified BOOLEAN DEFAULT FALSE,
   onboarding_data TEXT DEFAULT '',
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS chat_messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL,
   sender TEXT NOT NULL CHECK(sender IN ('user', 'ai')),
   text TEXT NOT NULL,
   chat_group_id TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL,
   token_jti TEXT UNIQUE NOT NULL,
-  expires_at TEXT NOT NULL,
-  is_revoked INTEGER DEFAULT 0,
+  expires_at TIMESTAMP NOT NULL,
+  is_revoked BOOLEAN DEFAULT FALSE,
   device_info TEXT DEFAULT '',
   ip_address TEXT DEFAULT '',
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   session_id TEXT UNIQUE NOT NULL,
   user_id INTEGER NOT NULL,
-  expires_at TEXT NOT NULL,
-  is_active INTEGER DEFAULT 1,
+  expires_at TIMESTAMP NOT NULL,
+  is_active BOOLEAN DEFAULT TRUE,
   user_agent TEXT DEFAULT '',
   ip_address TEXT DEFAULT '',
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL,
   token TEXT UNIQUE NOT NULL,
-  expires_at TEXT NOT NULL,
-  is_used INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now')),
+  expires_at TIMESTAMP NOT NULL,
+  is_used BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS email_verification_tokens (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL,
   token TEXT UNIQUE NOT NULL,
-  expires_at TEXT NOT NULL,
-  is_used INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now')),
+  expires_at TIMESTAMP NOT NULL,
+  is_used BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   level TEXT DEFAULT 'INFO',
   event_type TEXT NOT NULL,
   user_id INTEGER,
@@ -88,52 +87,52 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   action TEXT,
   details TEXT,
   session_id TEXT,
-  timestamp TEXT DEFAULT (datetime('now'))
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS login_attempts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   email TEXT NOT NULL,
   ip_address TEXT NOT NULL,
-  success INTEGER NOT NULL,
+  success BOOLEAN NOT NULL,
   user_agent TEXT DEFAULT '',
-  timestamp TEXT DEFAULT (datetime('now'))
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL,
   key_hash TEXT NOT NULL,
   key_prefix TEXT NOT NULL,
   name TEXT DEFAULT 'default',
-  is_active INTEGER DEFAULT 1,
-  last_used_at TEXT,
-  expires_at TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
+  is_active BOOLEAN DEFAULT TRUE,
+  last_used_at TIMESTAMP,
+  expires_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS security_alerts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   severity TEXT NOT NULL DEFAULT 'INFO',
   alert_type TEXT NOT NULL,
   description TEXT,
   ip_address TEXT,
   user_id INTEGER,
   details TEXT,
-  is_resolved INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now'))
+  is_resolved BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS file_uploads (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER,
   original_filename TEXT NOT NULL,
   stored_filename TEXT NOT NULL,
   file_path TEXT NOT NULL,
   file_size INTEGER NOT NULL,
   mime_type TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
