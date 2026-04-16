@@ -14,6 +14,8 @@ from services.ai_service import get_gemini_model, explain_image_with_gemini, get
 
 chat_bp = Blueprint("chat", __name__)
 logger = logging.getLogger("SAAITA")
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "development").lower() == "production"
+CHAT_LIMIT = "10 per hour" if IS_PRODUCTION else "30 per hour"
 
 # Keep chat objects in memory (Gemini client can't be serialized)
 ai_sessions = {}
@@ -21,7 +23,7 @@ ai_sessions = {}
 @chat_bp.route("/message", methods=["POST"])
 @require_auth
 @require_verified_email
-@limiter.limit("100 per hour")
+@limiter.limit(CHAT_LIMIT)
 def chat_message(user):
     if not GEMINI_API_KEY:
         return jsonify({"error": "AI service is not configured."}), 503
@@ -106,6 +108,7 @@ def chat_message(user):
 
 @chat_bp.route("/history", methods=["GET"])
 @require_auth
+@require_verified_email
 def chat_history(user):
     conn = get_db()
     try:
@@ -122,6 +125,7 @@ def chat_history(user):
 
 @chat_bp.route("/clear", methods=["POST"])
 @require_auth
+@require_verified_email
 def chat_clear(user):
     new_group_id = str(uuid.uuid4())
     session_id = request.headers.get("X-Session-Id", str(user["id"]))

@@ -2,6 +2,7 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
@@ -11,6 +12,9 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise SystemExit("[FATAL] DATABASE_URL environment variable is required")
+
+if not re.match(r"^postgresql(?:\+\w+)?://[^:@/]+:[^@/]+@[^:/]+:\d+/.+", DATABASE_URL):
+    raise SystemExit("[FATAL] DATABASE_URL format is invalid. Expected: postgresql://user:pass@host:port/dbname")
 
 def get_db():
     """Get PostgreSQL database connection with RealDictCursor for dict-like row access"""

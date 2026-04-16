@@ -96,8 +96,8 @@ export default function Auth() {
       // Save tokens
       if (resData.access_token && resData.csrf_token) {
         setTokens(resData.access_token, resData.refresh_token, resData.csrf_token);
-        localStorage.setItem('session_id', resData.user?.id || 'session');
-        localStorage.setItem('user', JSON.stringify(resData.user));
+        // Access/refresh tokens are httpOnly cookies managed by browser cookie jar.
+        // Do not persist user/session secrets to localStorage.
       }
       
       if (resData.user && resData.user.is_onboarded) {

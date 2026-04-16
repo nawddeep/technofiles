@@ -3,9 +3,9 @@
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
 const API_VERSION = "v1";  // Current API version
 
-// FIX 2.11: Only CSRF token in localStorage
-// Access/refresh tokens are httpOnly cookies from server (XSS-safe, sent automatically)
-let csrfToken = localStorage.getItem("csrf_token") || "";
+// Keep CSRF token in memory only.
+// Access/refresh tokens are httpOnly cookies managed by the browser.
+let csrfToken = "";
 let refreshPromise = null;  // FIX 2.14: Prevent concurrent refresh race conditions
 
 // Only store CSRF token (must be readable by JS for headers)
@@ -14,13 +14,11 @@ export function setTokens(access, refresh, csrf) {
   // We don't store them in memory - browser sends them automatically
   if (csrf) {
     csrfToken = csrf;
-    localStorage.setItem("csrf_token", csrf);
   }
 }
 
 export function clearTokens() {
   csrfToken = "";
-  localStorage.removeItem("csrf_token");
   // HTTP-only cookies are cleared server-side via logout endpoint
 }
 

@@ -53,7 +53,7 @@ def require_auth(f):
             "is_onboarded": bool(row["is_onboarded"]), 
             "is_verified": bool(row["is_verified"]),
             "onboarding_data": row["onboarding_data"] or "",
-            "member_since": row["created_at"].isoformat()[:10] if row["created_at"] else "\u2014"
+            "member_since": row["created_at"].isoformat() if row["created_at"] else ""
         }
         return f(user, *args, **kwargs)
     return decorated
@@ -65,6 +65,8 @@ def require_verified_email(f):
         if not user.get("is_verified"):
             try:
                 created_at = datetime.fromisoformat(user.get("member_since", ""))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
                 if (datetime.now(timezone.utc) - created_at).days >= 7:
                     return jsonify({
                         "error": "Email verification required to continue using SAAITA.",

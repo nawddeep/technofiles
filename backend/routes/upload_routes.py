@@ -6,15 +6,18 @@ from flask import Blueprint, request, jsonify
 from database import get_db
 from extensions import limiter
 from utils.file_utils import validate_file_upload, scan_file_content
-from security.auth_middleware import require_auth, get_ip
+from security.auth_middleware import require_auth, require_verified_email, get_ip
 from utils.audit_utils import audit_log
 
 upload_bp = Blueprint("upload", __name__)
 logger = logging.getLogger("SAAITA")
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "development").lower() == "production"
+UPLOAD_LIMIT = "10 per hour" if IS_PRODUCTION else "30 per hour"
 
 @upload_bp.route("/upload", methods=["POST"])
 @require_auth
-@limiter.limit("10 per hour")
+@require_verified_email
+@limiter.limit(UPLOAD_LIMIT)
 def upload_file(user):
     if "file" not in request.files:
         return jsonify({"error": "No file provided."}), 400
